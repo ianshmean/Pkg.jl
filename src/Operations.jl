@@ -444,6 +444,12 @@ end
 ########################
 # Package installation #
 ########################
+
+function pkg_server()
+    server = get(ENV, "JULIA_PKG_SERVER", "127.0.0.1")
+    return isempty(server) ? nothing : "http://$server:8000"
+end
+
 function get_archive_url_for_version(url::String, ref)
     if (m = match(r"https://github.com/(.*?)/(.*?).git", url)) != nothing
         return "https://api.github.com/repos/$(m.captures[1])/$(m.captures[2])/tarball/$(ref)"
@@ -453,20 +459,18 @@ end
 
 # Returns if archive successfully installed
 function install_archive(
-    urls::Vector{String},
+    urls::Vector{Pair{String,Bool}},
     hash::SHA1,
     version_path::String
 )::Bool
     tmp_objects = String[]
     url_success = false
-    for url in urls
-        archive_url = get_archive_url_for_version(url, hash)
-        archive_url !== nothing || continue
+    for (url, top) in urls
         path = tempname() * randstring(6) * ".tar.gz"
         push!(tmp_objects, path) # for cleanup
         url_success = true
         try
-            PlatformEngines.download(archive_url, path; verbose=false)
+            PlatformEngines.download(url, path; verbose=false)
         catch e
             e isa InterruptException && rethrow()
             url_success = false
@@ -479,18 +483,22 @@ function install_archive(
             unpack(path, dir; verbose=false)
         catch e
             e isa InterruptException && rethrow()
-            @warn "failed to extract archive downloaded from $(archive_url)"
+            @warn "failed to extract archive downloaded from $(url)"
             url_success = false
         end
         url_success || continue
-        dirs = readdir(dir)
-        # 7z on Win might create this spurious file
-        filter!(x -> x != "pax_global_header", dirs)
-        @assert length(dirs) == 1
+        if top
+            unpacked = dir
+        else
+            dirs = readdir(dir)
+            # 7z on Win might create this spurious file
+            filter!(x -> x != "pax_global_header", dirs)
+            @assert length(dirs) == 1
+            unpacked = joinpath(dir, dirs[1])
+        end
         # Assert that the tarball unpacked to the tree sha we wanted
         # TODO: Enable on Windows when tree_hash handles
         # executable bits correctly, see JuliaLang/julia #33212.
-        unpacked = joinpath(dir, dirs[1])
         if !Sys.iswindows()
             if SHA1(GitTools.tree_hash(unpacked)) != hash
                 @warn "tarball content does not match git-tree-sha1"
@@ -632,7 +640,16 @@ function download_source(ctx::Context, pkgs::Vector{PackageSpec},
                     continue
                 end
                 try
-                    success = install_archive(urls[pkg.uuid], pkg.tree_hash, path)
+                    archive_urls = Pair{String,Bool}[]
+                    if (server = pkg_server()) !== nothing
+                        url = "$server/package/$(pkg.uuid)/$(pkg.tree_hash)"
+                        push!(archive_urls, url => true)
+                    end
+                    for repo_url in urls[pkg.uuid]
+                        url = get_archive_url_for_version(repo_url, pkg.tree_hash)
+                        push!(archive_urls, url => false)
+                    end
+                    success = install_archive(archive_urls, pkg.tree_hash, path)
                     if success && readonly
                         set_readonly(path) # In add mode, files should be read-only
                     end
