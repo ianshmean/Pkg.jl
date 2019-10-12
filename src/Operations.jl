@@ -12,8 +12,8 @@ using ..Types, ..Resolve, ..PlatformEngines, ..GitTools, ..Display
 import ..depots, ..depots1, ..devdir, ..set_readonly, ..Types.PackageEntry
 import ..Artifacts: ensure_all_artifacts_installed, artifact_names, extract_all_hashes, artifact_exists
 using ..BinaryPlatforms
-import ..Pkg
-
+import ...Pkg
+import ...Pkg: pkg_server
 
 #########
 # Utils #
@@ -444,11 +444,6 @@ end
 ########################
 # Package installation #
 ########################
-
-function pkg_server()
-    server = get(ENV, "JULIA_PKG_SERVER", "127.0.0.1")
-    return isempty(server) ? nothing : "http://$server:8000"
-end
 
 function get_archive_url_for_version(url::String, ref)
     if (m = match(r"https://github.com/(.*?)/(.*?).git", url)) != nothing
