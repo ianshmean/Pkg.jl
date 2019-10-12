@@ -20,8 +20,10 @@ function depots1()
 end
 
 function pkg_server()
-    server = get(ENV, "JULIA_PKG_SERVER", "127.0.0.1")
-    return isempty(server) ? nothing : "http://$server:8000"
+    server = get(ENV, "JULIA_PKG_SERVER", "pkg.julialang.org")
+    isempty(server) && return nothing
+    startswith(server, r"\w+://") || (server = "https://$server")
+    return server
 end
 
 logdir(depot = depots1()) = joinpath(depot, "logs")
