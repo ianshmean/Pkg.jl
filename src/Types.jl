@@ -11,9 +11,10 @@ import Base.string
 using REPL.TerminalMenus
 
 using ..TOML
-import ..Pkg, ..UPDATED_REGISTRY_THIS_SESSION, ..DEFAULT_IO
-import Pkg: GitTools, depots, depots1, logdir, set_readonly, safe_realpath
+import ...Pkg, ..UPDATED_REGISTRY_THIS_SESSION, ..DEFAULT_IO
+import ...Pkg: GitTools, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server
 import ..BinaryPlatforms: Platform
+import ..PlatformEngines: probe_platform_engines!, download, download_verify_unpack
 
 import Base: SHA1
 using SHA
@@ -895,7 +896,31 @@ function clone_or_cp_registries(ctx::Context, regs::Vector{RegistrySpec}, depot:
         end
         # clone to tmpdir first
         tmp = mktempdir()
-        if reg.path !== nothing # copy from local source
+        hash = nothing
+        if (server = pkg_server()) !== nothing
+            probe_platform_engines!()
+            mktemp() do tmp_path, io
+                download("$server/registries", tmp_path, verbose=false)
+                for line in eachline(io)
+                    if (m = match(r"^/registry/([^/]+)/([^/]+)$", line)) !== nothing
+                        reg.uuid == UUID(m.captures[1]) || continue
+                        hash = String(m.captures[2])
+                        break
+                    end
+                end
+            end
+        end
+        if hash !== nothing # download from Pkg server
+            download_verify_unpack(
+                "$server/registry/$(reg.uuid)/$hash", nothing, tmp,
+                ignore_existence = true,
+            )
+            tree_info = joinpath(tmp, ".tree_info.toml")
+            ispath(tree_info) && error("tree info file $tree_info already exists")
+            open(tree_info, write=true) do io
+                println(io, "git-tree-sha1 = ", repr(hash))
+            end
+        elseif reg.path !== nothing # copy from local source
             printpkgstyle(ctx, :Copying, "registry from `$(Base.contractuser(reg.path))`")
             cp(reg.path, tmp; force=true)
         elseif reg.url !== nothing # clone from url
