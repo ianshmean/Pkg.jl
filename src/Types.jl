@@ -919,9 +919,10 @@ function clone_or_cp_registries(ctx::Context, regs::Vector{RegistrySpec}, depot:
         if (url = pkg_server_registry_url(reg.uuid)) !== nothing
             # download from Pkg server
             download_verify_unpack(url, nothing, tmp, ignore_existence = true)
-            tree_info = joinpath(tmp, ".tree_info.toml")
-            ispath(tree_info) && error("tree info file $tree_info already exists")
-            open(tree_info, write=true) do io
+            tree_info_file = joinpath(tmp, ".tree_info.toml")
+            ispath(tree_info_file) &&
+                error("tree info file $tree_info_file already exists")
+            open(tree_info_file, write=true) do io
                 hash = pkg_server_url_hash(url)
                 println(io, "git-tree-sha1 = ", repr(hash))
             end
@@ -1039,8 +1040,29 @@ function update_registries(ctx::Context, regs::Vector{RegistrySpec} = collect_re
     !force && UPDATED_REGISTRY_THIS_SESSION[] && return
     errors = Tuple{String, String}[]
     for reg in unique(r -> r.uuid, find_installed_registries(ctx, regs))
-        if isdir(joinpath(reg.path, ".git"))
-            regpath = pathrepr(reg.path)
+        regpath = pathrepr(reg.path)
+        if isfile(joinpath(reg.path, ".tree_info.toml"))
+            printpkgstyle(ctx, :Updating, "registry at " * regpath)
+            tree_info = TOML.parsefile(joinpath(reg.path, ".tree_info.toml"))
+            old_hash = tree_info["git-tree-sha1"]
+            url = pkg_server_registry_url(reg.uuid)
+            if url !== nothing && (new_hash = pkg_server_url_hash(url)) != old_hash
+                # TODO: update faster by using a diff, if available
+                mktempdir() do tmp
+                    download_verify_unpack(url, nothing, tmp, ignore_existence = true)
+                    tree_info_file = joinpath(tmp, ".tree_info.toml")
+                    ispath(tree_info_file) &&
+                        error("tree info file $tree_info_file already exists")
+                    open(tree_info_file, write=true) do io
+                        println(io, "git-tree-sha1 = ", repr(new_hash))
+                    end
+                    registry_file = joinpath(tmp, "Registry.toml")
+                    registry = read_registry(registry_file; cache=false)
+                    verify_registry(registry)
+                    mv(tmp, reg.path, force=true)
+                end
+            end
+        elseif isdir(joinpath(reg.path, ".git"))
             printpkgstyle(ctx, :Updating, "registry at " * regpath)
             # Using LibGit2.with here crashes julia when running the
             # tests for PkgDev wiht "Unreachable reached".
