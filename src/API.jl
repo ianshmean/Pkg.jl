@@ -896,8 +896,7 @@ precompile() = precompile(Context())
 function precompile(ctx::Context)
     printpkgstyle(ctx, :Precompiling, "project...")
     
-    num_tasks = parse(Int, get(ENV, "JULIA_NUM_PRECOMPILE_TASKS", string(Sys.CPU_THREADS + 1)))
-    parallel_limiter = Base.Semaphore(num_tasks)
+    num_tasks = parse(Int, get(ENV, "JULIA_NUM_PRECOMPILE_TASKS", string(Sys.CPU_THREADS + 1)))    
     
     man = Pkg.Types.read_manifest(ctx.env.manifest_file)
     pkgids = [Base.PkgId(first(dep), last(dep).name) for dep in man if !Pkg.Operations.is_stdlib(first(dep))]
@@ -907,12 +906,13 @@ function precompile(ctx::Context)
     if ctx.env.pkg !== nothing && isfile( joinpath( dirname(ctx.env.project_file), "src", ctx.env.pkg.name * ".jl") )
         push!(pkgids, Base.PkgId(ctx.env.pkg.uuid, ctx.env.pkg.name))
         push!(pkg_dep_uuid_lists, collect(keys(ctx.env.project.deps)))
-    end    
-    
-    precomp_events = Dict{Base.UUID,Base.Event}()
+    end
+        
+    pkg_queue = Channel{Tuple{Base.PkgId,String}}(length(pkgids)) 
+    was_processed = Dict{Base.UUID,Base.Event}()
     was_recompiled = Dict{Base.UUID,Bool}()
     for pkgid in pkgids
-        precomp_events[pkgid.uuid] = Base.Event()
+        was_processed[pkgid.uuid] = Base.Event()
         was_recompiled[pkgid.uuid] = false
     end
     
@@ -925,7 +925,23 @@ function precompile(ctx::Context)
         return true
     end
     
-    errored = false
+    terminate = false
+    
+    for i in 1:num_tasks # precomp workers
+        @async while !terminate
+            pkg, sourcepath = take!(pkg_queue)
+            try
+                Base.compilecache(pkg, sourcepath)
+                was_recompiled[pkg.uuid] = true
+            catch err
+                terminate = true
+                throw(err)
+            finally
+                notify(was_processed[pkg.uuid])
+            end
+        end
+    end
+    
     @sync for (i, pkg) in pairs(pkgids)
         paths = Base.find_all_in_cache_path(pkg)
         sourcepath = Base.locate_package(pkg)
@@ -934,33 +950,24 @@ function precompile(ctx::Context)
         occursin(r"\b__precompile__\(\s*false\s*\)", read(sourcepath, String)) && continue
         
         @async begin
-            for dep_uuid in pkg_dep_uuid_lists[i]
-                wait(precomp_events[dep_uuid])
+            for dep_uuid in pkg_dep_uuid_lists[i] # wait for deps to finish
+                wait(was_processed[dep_uuid])
             end
-            if errored # early termination of precompilation session
-                notify(precomp_events[pkg.uuid])
+            if terminate # early termination of precompilation session
+                notify(was_processed[pkg.uuid])
                 return
             end
             
             # skip stale checking and force compilation if any dep was recompiled in this session
             any_dep_recompiled = any(map(dep_uuid->was_recompiled[dep_uuid], pkg_dep_uuid_lists[i]))
             if any_dep_recompiled || is_stale(paths, sourcepath)
-                Base.acquire(parallel_limiter)
-                try
-                    Base.compilecache(pkg, sourcepath)
-                    was_recompiled[pkg.uuid] = true
-                catch err
-                    errored = true
-                    throw(err)
-                finally
-                    notify(precomp_events[pkg.uuid])
-                    Base.release(parallel_limiter)
-                end
+                put!(pkg_queue, (pkg, sourcepath))
             else
-                notify(precomp_events[pkg.uuid])
+                notify(was_processed[pkg.uuid])
             end
         end  
     end
+    terminate = true
     nothing
 end
 
