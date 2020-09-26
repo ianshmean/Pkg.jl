@@ -10,8 +10,7 @@ using UUIDs
 using Pkg.Resolve
 import Pkg.Resolve: VersionWeight, add_reqs!, simplify_graph!, ResolverError, Fixed, Requires
 
-include("utils.jl")
-using .Utils
+using ..Utils
 include("resolve_utils.jl")
 using .ResolveUtils
 
