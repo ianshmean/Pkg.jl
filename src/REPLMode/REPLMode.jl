@@ -651,6 +651,7 @@ end
 const help = gen_help()
 
 function try_prompt_pkg_add(pkgs::Vector{Symbol})
+    isnothing(Base.ACTIVE_PROJECT[]) && return false
     ctx = Context()
     available_uuids = [Types.registered_uuids(ctx.registries, String(pkg)) for pkg in pkgs] # vector of vectors
     available_pkgs = pkgs[isempty.(available_uuids) .== false]
